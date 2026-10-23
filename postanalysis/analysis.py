@@ -19,12 +19,14 @@ def analyse_lots(lots: pd.DataFrame, histories: dict[str, pd.DataFrame], as_of=N
         hist = histories.get(lot["ISIN"])
         out = dict(lot)
         out.update({"Status": "Sold" if pd.notna(lot["Sell Date"]) else "Held"})
+        buy_price, qty = lot["Buy Price"], lot["Quantity"]
         if hist is None or hist.empty:
             out["Note"] = "no price data"
+            if out["Status"] == "Sold":  # realised P&L needs no market prices
+                out.update(_exit_columns(lot, lot["Sell Date"], lot["Sell Price"]))
             rows.append(out)
             continue
 
-        buy_price, qty = lot["Buy Price"], lot["Quantity"]
         if out["Status"] == "Sold":
             end = lot["Sell Date"]
             exit_date, exit_price = end, lot["Sell Price"]
@@ -34,9 +36,15 @@ def analyse_lots(lots: pd.DataFrame, histories: dict[str, pd.DataFrame], as_of=N
 
         window = hist.loc[(hist.index > lot["Buy Date"]) & (hist.index <= end), "Close"].dropna()
         if window.empty:
-            out["Note"] = "sold same day (intraday)" if out["Status"] == "Sold" else "no prices after buy date"
-            out.update({"Exit Date": exit_date, "Exit Price": exit_price,
-                        "Actual P&L": (exit_price - buy_price) * qty})
+            out.update(_exit_columns(lot, exit_date, exit_price))
+            out["Price Now"] = hist["Close"].iloc[-1]
+            if out["Status"] == "Sold":
+                # Sold before the next close: the sale itself is the only possible exit.
+                out.update({"Note": "sold same day (intraday)", "Best Sell Date": exit_date,
+                            "Best Sell Price": exit_price, "Best P&L": out["Actual P&L"], "Missed Profit": 0.0,
+                            "Best Return %": out["Actual Return %"]})
+            else:
+                out["Note"] = "no prices after buy date"
             rows.append(out)
             continue
 
@@ -63,6 +71,18 @@ def analyse_lots(lots: pd.DataFrame, histories: dict[str, pd.DataFrame], as_of=N
     return pd.DataFrame(rows)
 
 
+def _exit_columns(lot: dict, exit_date, exit_price) -> dict:
+    held_days = (exit_date - lot["Buy Date"]).days
+    return {
+        "Exit Date": exit_date,
+        "Exit Price": exit_price,
+        "Actual P&L": (exit_price - lot["Buy Price"]) * lot["Quantity"],
+        "Actual Return %": (exit_price / lot["Buy Price"] - 1) * 100,
+        "Days Held": held_days,
+        "Term": "LTCG" if held_days > LTCG_DAYS else "STCG",
+    }
+
+
 def sold_lots(analysed: pd.DataFrame) -> pd.DataFrame:
     """Closed lots, plus how the price moved after the sale."""
     sold = analysed[analysed["Status"] == "Sold"].copy()
@@ -84,13 +104,21 @@ def held_lots(analysed: pd.DataFrame, as_of=None) -> pd.DataFrame:
     return held
 
 
+PRICE_COLUMNS = ["Price Now", "Exit Price", "Best Sell Date", "Best Sell Price", "Best P&L", "Missed Profit"]
+
+
+def _with_price_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Lots without any price data lack these columns; add them as empty so summaries still work."""
+    return df.reindex(columns=df.columns.union(PRICE_COLUMNS, sort=False))
+
+
 def _invested(df: pd.DataFrame) -> pd.Series:
     return df["Buy Price"] * df["Quantity"]
 
 
 def summarise_sold(sold: pd.DataFrame) -> pd.DataFrame:
     """One row per stock: realised P&L vs the best it could have been."""
-    sold = sold.dropna(subset=["Best P&L"])
+    sold = _with_price_columns(sold).dropna(subset=["Actual P&L"])
     if sold.empty:
         return pd.DataFrame()
     sold = sold.assign(Proceeds=sold["Sell Price"] * sold["Quantity"])
@@ -113,11 +141,12 @@ def summarise_sold(sold: pd.DataFrame) -> pd.DataFrame:
 
 def summarise_held(held: pd.DataFrame) -> pd.DataFrame:
     """One row per stock still held: unrealised P&L, peak since buying, and tax timing."""
-    held = held.dropna(subset=["Best P&L"])
+    held = _with_price_columns(held).dropna(subset=["Actual P&L"])
     if held.empty:
         return pd.DataFrame()
     held = held.assign(LTCG_Qty=held["Quantity"].where(held["Term"] == "LTCG", 0))
-    peak = held.loc[held.groupby("Symbol")["Best Sell Price"].idxmax(), ["Symbol", "Best Sell Date", "Best Sell Price"]]
+    priced = held.dropna(subset=["Best Sell Price"])
+    peak = priced.loc[priced.groupby("Symbol")["Best Sell Price"].idxmax(), ["Symbol", "Best Sell Date", "Best Sell Price"]]
     pending = held[held["Days To LTCG"] > 0].groupby("Symbol")["LTCG From"].min()
     out = held.groupby("Symbol").agg(
         Lots=("Quantity", "size"),

@@ -101,3 +101,13 @@ def test_profit_loss_and_invested_totals():
     row = totals_row(summary, ["Lots", "Invested", "Realised P&L"]).iloc[0]
     assert row["Symbol"] == "Total (3 stocks)" and row["Lots"] == 4
     assert row["Return %"] == 200 / 3500 * 100
+
+
+def test_realised_pnl_kept_for_intraday_and_unpriced_sales():
+    t = trades([["ABC", "2026-06-05", "buy", 10, 100, 1], ["ABC", "2026-06-05", "sell", 10, 103, 2]])
+    lots, _ = match_fifo(t)
+    intraday = analyse_lots(lots, {"INE000X01011": history([100, 101, 102, 104, 106])}).iloc[0]
+    assert intraday["Actual P&L"] == 30 and intraday["Missed Profit"] == 0
+    unpriced = analyse_lots(lots, {}).iloc[0]
+    assert unpriced["Actual P&L"] == 30 and unpriced["Note"] == "no price data"
+    assert summarise_sold(sold_lots(analyse_lots(lots, {}))).iloc[0]["Realised P&L"] == 30
