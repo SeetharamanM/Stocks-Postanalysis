@@ -186,11 +186,62 @@ def pnl_totals(summary: pd.DataFrame, pnl_col: str) -> dict:
     }
 
 
-def totals_row(summary: pd.DataFrame, sum_cols: list[str], unit: str = "stocks") -> pd.DataFrame:
+def totals_row(summary: pd.DataFrame, sum_cols: list[str], unit: str = "stocks",
+               label_col: str = "Symbol") -> pd.DataFrame:
     """A single 'Total' row summing `sum_cols`, with Return % recomputed on the totals."""
     row = {c: summary[c].sum() for c in sum_cols if c in summary}
-    row["Symbol"] = f"Total ({len(summary)} {unit})"
-    pnl = next((c for c in ["Realised P&L", "Unrealised P&L", "Actual P&L"] if c in row), None)
+    row[label_col] = f"Total ({len(summary)} {unit})"
+    pnl = next((c for c in ["Realised P&L", "Unrealised P&L", "Actual P&L", "Net P&L"] if c in row), None)
     if pnl and row.get("Invested"):
         row["Return %"] = row[pnl] / row["Invested"] * 100
     return pd.DataFrame([row])
+
+
+def financial_year(dates: pd.Series) -> pd.Series:
+    """Indian financial year (April-March) label, e.g. 2025-06-10 -> 'FY2025-26'."""
+    start = dates.dt.year - (dates.dt.month < 4)
+    return "FY" + start.astype(str) + "-" + ((start + 1) % 100).astype(str).str.zfill(2)
+
+
+def monthly_realised(sold: pd.DataFrame) -> pd.DataFrame:
+    """Realised P&L per calendar month of sale: invested, sale value, profit, loss, net, STCG/LTCG split.
+
+    Profit and loss are summed per lot, so a month shows both the winning and losing exits made in it.
+    """
+    sold = sold.dropna(subset=["Actual P&L"])
+    if sold.empty:
+        return pd.DataFrame()
+    pnl = sold["Actual P&L"]
+    df = sold.assign(
+        Month=sold["Sell Date"].dt.to_period("M"),
+        FY=financial_year(sold["Sell Date"]),
+        SaleValue=sold["Sell Price"] * sold["Quantity"],
+        Profit=pnl.where(pnl > 0, 0.0),
+        Loss=pnl.where(pnl < 0, 0.0),
+        STCG=pnl.where(sold["Term"] == "STCG", 0.0),
+        LTCG=pnl.where(sold["Term"] == "LTCG", 0.0),
+    )
+    out = df.groupby(["FY", "Month"]).agg(
+        Lots=("Quantity", "size"),
+        Stocks=("ISIN", "nunique"),
+        Invested=("Invested", "sum"),
+        **{"Sale Value": ("SaleValue", "sum"),
+           "Profit": ("Profit", "sum"),
+           "Loss": ("Loss", "sum"),
+           "Net P&L": ("Actual P&L", "sum"),
+           "STCG P&L": ("STCG", "sum"),
+           "LTCG P&L": ("LTCG", "sum")},
+    ).reset_index()
+    out["Return %"] = out["Net P&L"] / out["Invested"] * 100
+    out["Month"] = out["Month"].dt.to_timestamp()
+    return out.sort_values("Month").reset_index(drop=True)
+
+
+def yearly_realised(monthly: pd.DataFrame) -> pd.DataFrame:
+    """Roll the monthly table up to Indian financial years."""
+    if monthly.empty:
+        return pd.DataFrame()
+    cols = ["Lots", "Invested", "Sale Value", "Profit", "Loss", "Net P&L", "STCG P&L", "LTCG P&L"]
+    out = monthly.groupby("FY")[cols].sum().reset_index()
+    out["Return %"] = out["Net P&L"] / out["Invested"] * 100
+    return out

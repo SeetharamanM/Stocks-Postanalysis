@@ -3,12 +3,21 @@
 A Streamlit app that reads your Zerodha tradebooks and shows, in hindsight, the date each
 stock lot could have been sold for the most profit, compared with what you actually made.
 
-The app has two separate analyses:
+The app has two pages (switch in the sidebar):
 
+**📈 Sell analysis**
 - **Sold stocks: did I sell at the right time?** For every sold lot: the best date between buying
   and selling, realised vs best P&L, missed profit, and how the price moved after you sold.
 - **Held stocks: how are my holdings doing?** For every open lot: unrealised P&L, the peak price
   since buying and how far below it the stock is now, and when each lot turns long-term (LTCG).
+- **Monthly P&L:** realised profit, loss and net P&L for every month of sale, with STCG/LTCG split,
+  a chart, and totals per Indian financial year (April–March).
+
+**📊 Stock parameters:** for each stock, the day it peaked while you held it, and on that day its
+PE, PEG, EPS growth, beta and alpha vs NIFTY 50, alongside today's PE. EPS comes from Yahoo Finance
+(about 4 years of annual and 5–6 quarters of quarterly results) and is cached in `data/fundamentals/`.
+
+All amounts use Indian grouping (₹1,51,792; hover a figure for the lakh/crore form).
 
 ## Run it on your computer
 
@@ -50,6 +59,12 @@ automatically from Yahoo's split data.
    columns `Date, Close, High, Stock Splits` into that folder.
 4. **Analysis** (`postanalysis/analysis.py`): for each lot, the highest close between the day after
    purchase and the sell date (or today for held lots).
+
+5. **Fundamentals** (`postanalysis/fundamentals.py`): PE = traded price ÷ trailing-12-month EPS of the
+   quarters reported before that date; PEG = PE ÷ year-on-year EPS growth; beta and Jensen's alpha from
+   daily returns vs NIFTY 50 over a window before the peak.
+
+Pages live in `views/`; `app.py` only sets up navigation, and `postanalysis/ui.py` holds what they share.
 
 ## Limitations
 
