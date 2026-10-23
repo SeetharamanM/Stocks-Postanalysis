@@ -3,6 +3,13 @@
 A Streamlit app that reads your Zerodha tradebooks and shows, in hindsight, the date each
 stock lot could have been sold for the most profit, compared with what you actually made.
 
+The app has two separate analyses:
+
+- **Sold stocks: did I sell at the right time?** For every sold lot: the best date between buying
+  and selling, realised vs best P&L, missed profit, and how the price moved after you sold.
+- **Held stocks: how are my holdings doing?** For every open lot: unrealised P&L, the peak price
+  since buying and how far below it the stock is now, and when each lot turns long-term (LTCG).
+
 ## Run it on your computer
 
 ```bash

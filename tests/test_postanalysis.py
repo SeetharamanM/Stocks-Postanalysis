@@ -1,6 +1,6 @@
 import pandas as pd
 
-from postanalysis.analysis import analyse_lots
+from postanalysis.analysis import analyse_lots, held_lots, sold_lots, summarise_held, summarise_sold
 from postanalysis.lots import adjust_for_splits, match_fifo
 from postanalysis.tradebook import normalise
 
@@ -64,3 +64,27 @@ def test_blank_isin_is_filled_from_same_symbol():
                       columns=["Symbol", "ISIN", "Trade Date", "Trade Type", "Quantity", "Price", "Trade ID"])
     df["Exchange"] = "NSE"
     assert normalise(df.astype(str))["ISIN"].tolist() == ["INE1", "INE1"]
+
+
+def test_sold_and_held_are_analysed_separately():
+    t = trades([
+        ["ABC", "2026-06-01", "buy", 10, 100, 1],
+        ["ABC", "2026-06-02", "buy", 5, 101, 2],
+        ["ABC", "2026-06-04", "sell", 10, 105, 3],
+    ])
+    lots, _ = match_fifo(t)
+    analysed = analyse_lots(lots, {"INE000X01011": history([100, 101, 112, 105, 108, 120])}, "2026-06-06")
+
+    sold = sold_lots(analysed)
+    assert sold["Quantity"].sum() == 10
+    assert sold["Since Sale %"].iloc[0] == (120 / 105 - 1) * 100
+    s = summarise_sold(sold).iloc[0]
+    assert s["Realised P&L"] == 50 and s["Missed Profit"] == 70
+
+    held = held_lots(analysed, "2026-06-06")
+    assert held["Quantity"].sum() == 5
+    assert held["Days To LTCG"].iloc[0] == 362  # LTCG from 3 Jun 2027
+    h = summarise_held(held).iloc[0]
+    assert h["Unrealised P&L"] == 5 * (120 - 101)
+    assert h["Peak Date"] == pd.Timestamp("2026-06-06") and h["From Peak %"] == 0
+    assert h["Next LTCG Date"] == pd.Timestamp("2027-06-03")

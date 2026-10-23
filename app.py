@@ -10,7 +10,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from postanalysis.analysis import analyse_lots, summarise_by_stock
+from postanalysis.analysis import analyse_lots, held_lots, sold_lots, summarise_held, summarise_sold
 from postanalysis.lots import adjust_for_splits, match_fifo
 from postanalysis.prices import get_history, ticker_for
 from postanalysis.tradebook import load_folder, normalise, read_tradebook
@@ -72,14 +72,15 @@ histories = load_prices(tickers, trades["Trade Date"].min(), pd.Timestamp(as_of)
 lots, unmatched = match_fifo(adjust_for_splits(trades, histories))
 analysed = analyse_lots(lots, histories, as_of)
 
+sold = sold_lots(analysed)
+held = held_lots(analysed, as_of)
+
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Trades", f"{len(trades):,}")
 c2.metric("Files", trades["source_file"].nunique())
-c3.metric("Stocks", trades["ISIN"].nunique())
-if "Best P&L" in analysed:
-    c4.metric("Actual P&L", f"₹{analysed['Actual P&L'].sum():,.0f}")
-    c5.metric("Best possible P&L", f"₹{analysed['Best P&L'].sum():,.0f}",
-              f"₹{analysed['Missed Profit'].sum():,.0f} missed", delta_color="off")
+c3.metric("Stocks traded", trades["ISIN"].nunique())
+c4.metric("Stocks sold", sold["ISIN"].nunique())
+c5.metric("Stocks held", held["ISIN"].nunique())
 st.caption(
     f"Trades from {trades['Trade Date'].min():%d %b %Y} to {trades['Trade Date'].max():%d %b %Y}. "
     "P&L is before brokerage, STT, stamp duty, DP charges and tax. Best dates use daily closes, in hindsight. "
@@ -87,40 +88,90 @@ st.caption(
 )
 
 money = {c: st.column_config.NumberColumn(format="₹%.0f") for c in
-         ["Invested", "Actual P&L", "Best P&L", "Missed Profit"]}
+         ["Invested", "Actual P&L", "Realised P&L", "Unrealised P&L", "Best P&L", "Missed Profit"]}
 price = {c: st.column_config.NumberColumn(format="%.2f") for c in
-         ["Buy Price", "Exit Price", "Best Sell Price", "Sell Price", "Actual Return %", "Best Return %"]}
+         ["Buy Price", "Avg Buy Price", "Exit Price", "Sell Price", "Best Sell Price", "Peak Price",
+          "Price Now", "Actual Return %", "Best Return %", "Return %", "Since Sale %", "From Peak %"]}
+qty = {c: st.column_config.NumberColumn(format="%g") for c in ["Quantity", "LTCG Qty"]}
 dates = {c: st.column_config.DateColumn(format="DD MMM YYYY") for c in
-         ["Buy Date", "Exit Date", "Best Sell Date", "Sell Date", "Latest Best Date"]}
+         ["Buy Date", "Exit Date", "Best Sell Date", "Sell Date", "Last Sell Date", "Peak Date",
+          "First Buy", "LTCG From", "Next LTCG Date"]}
+fmt = {**money, **price, **dates, **qty}
+
+
+def table(df: pd.DataFrame, cols: list[str], sort: str, ascending: bool, filename: str):
+    view = df[[c for c in cols if c in df.columns]]
+    if sort in view:
+        view = view.sort_values(sort, ascending=ascending)
+    st.dataframe(view, hide_index=True, use_container_width=True, column_config=fmt)
+    st.download_button("Download CSV", view.to_csv(index=False), filename, "text/csv", key=filename)
+
+
+def total(df: pd.DataFrame, col: str) -> float:
+    return df[col].sum() if col in df else 0.0
+
 
 if not unmatched.empty:
     with st.expander(f"⚠️ {unmatched['Symbol'].nunique()} stocks sold with no matching buy — add older tradebooks"):
         st.write("These sells have no earlier buy in the loaded files, so they are left out of the analysis. "
                  "Usually shares from an IPO, demerger, transfer-in or a buy before your oldest tradebook: "
                  "add them as buy rows in a CSV in the tradebook folder (see README).")
-        st.dataframe(unmatched, hide_index=True, use_container_width=True, column_config=dates)
+        st.dataframe(unmatched, hide_index=True, use_container_width=True, column_config=fmt)
 
 no_price = analysed.loc[analysed.get("Note", pd.Series(dtype=str)).eq("no price data"), "Symbol"].unique()
 if len(no_price):
     st.warning(f"No price data for: {', '.join(sorted(no_price))}. "
                f"Add a CSV (Date, Close, High, Stock Splits) to {PRICE_CACHE} named <SYMBOL>.NS.csv.")
 
-tab_stock, tab_lots, tab_chart = st.tabs(["By stock", "By lot", "Chart"])
+tab_sold, tab_held, tab_chart = st.tabs(["Sold stocks", "Held stocks", "Chart"])
 
-with tab_stock:
-    status = st.radio("Show", ["All", "Sold", "Held"], horizontal=True)
-    summary = summarise_by_stock(analysed)
-    if status != "All" and not summary.empty:
-        summary = summary[summary["Status"] == status]
-    st.dataframe(summary, hide_index=True, use_container_width=True, column_config={**money, **dates})
+with tab_sold:
+    st.subheader("Sold: did I sell at the right time?")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Realised P&L", f"₹{total(sold, 'Actual P&L'):,.0f}")
+    m2.metric("Best possible P&L", f"₹{total(sold, 'Best P&L'):,.0f}")
+    m3.metric("Missed profit", f"₹{total(sold, 'Missed Profit'):,.0f}")
+    if "Since Sale %" in sold and sold["Since Sale %"].notna().any():
+        m4.metric("Sold, then rose further", f"{(sold['Since Sale %'] > 0).mean():.0%} of lots")
+    st.caption("Best date = highest close between buying and selling. "
+               "Since Sale % = today's price vs your sell price (positive means it kept rising after you sold).")
+    by_stock, by_lot = st.tabs(["By stock", "By lot"])
+    with by_stock:
+        table(summarise_sold(sold),
+              ["Symbol", "Lots", "Quantity", "Invested", "Realised P&L", "Return %", "Best P&L", "Missed Profit",
+               "Last Sell Date", "Price Now", "Since Sale %"],
+              "Missed Profit", False, "sold_by_stock.csv")
+    with by_lot:
+        table(sold,
+              ["Symbol", "Quantity", "Buy Date", "Buy Price", "Sell Date", "Sell Price", "Best Sell Date",
+               "Best Sell Price", "Actual P&L", "Best P&L", "Missed Profit", "Actual Return %", "Best Return %",
+               "Days Held", "Term", "Price Now", "Since Sale %", "Note"],
+              "Missed Profit", False, "sold_lots.csv")
 
-with tab_lots:
-    cols = ["Symbol", "Status", "Quantity", "Buy Date", "Buy Price", "Exit Date", "Exit Price",
-            "Best Sell Date", "Best Sell Price", "Actual P&L", "Best P&L", "Missed Profit",
-            "Actual Return %", "Best Return %", "Days Held", "Term", "Note"]
-    view = analysed[[c for c in cols if c in analysed.columns]].sort_values("Missed Profit", ascending=False)
-    st.dataframe(view, hide_index=True, use_container_width=True, column_config={**money, **price, **dates})
-    st.download_button("Download CSV", view.to_csv(index=False), "best_sell_dates.csv", "text/csv")
+with tab_held:
+    st.subheader("Held: how are my current holdings doing?")
+    m1, m2, m3, m4 = st.columns(4)
+    invested = (held["Buy Price"] * held["Quantity"]).sum()
+    unrealised = total(held, "Actual P&L")
+    m1.metric("Invested", f"₹{invested:,.0f}")
+    m2.metric("Unrealised P&L", f"₹{unrealised:,.0f}", f"{unrealised / invested:.1%}" if invested else None)
+    m3.metric("P&L at each lot's peak", f"₹{total(held, 'Best P&L'):,.0f}")
+    m4.metric("Lots turning LTCG in 30 days", int(((held["Days To LTCG"] > 0) & (held["Days To LTCG"] <= 30)).sum()))
+    st.caption("Peak = highest close since you bought. From Peak % = today's price vs that peak. "
+               "Lots held over 12 months are taxed as LTCG (12.5%) instead of STCG (20%).")
+    by_stock, by_lot = st.tabs(["By stock", "By lot"])
+    with by_stock:
+        table(summarise_held(held),
+              ["Symbol", "Lots", "Quantity", "Avg Buy Price", "Invested", "Price Now", "Unrealised P&L", "Return %",
+               "Peak Date", "Peak Price", "From Peak %", "Best P&L", "Missed Profit", "First Buy", "LTCG Qty",
+               "Next LTCG Date"],
+              "Unrealised P&L", True, "held_by_stock.csv")
+    with by_lot:
+        table(held,
+              ["Symbol", "Quantity", "Buy Date", "Buy Price", "Price Now", "Actual P&L", "Actual Return %",
+               "Best Sell Date", "Best Sell Price", "Best P&L", "From Peak %", "Days Held", "Term", "LTCG From",
+               "Days To LTCG", "Note"],
+              "Actual P&L", True, "held_lots.csv")
 
 with tab_chart:
     symbols = sorted(analysed["Symbol"].unique())
