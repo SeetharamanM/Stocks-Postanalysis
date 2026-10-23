@@ -18,15 +18,31 @@ tradebook exports (e.g. `C:\Users\you\Documents\Tradebooks` or `~/Tradebooks`), 
 - Load **all years** of tradebooks. A sell without an earlier buy in the files is listed
   under "stocks sold with no matching buy" and left out of the analysis.
 
+### Shares you never bought through Zerodha
+
+Shares from an IPO allotment, a demerger (e.g. RAYMONDLSL, RAYMONDREL, ONESOURCE), a transfer-in
+or a buy older than your oldest tradebook show up as "sold with no matching buy". Add them as
+buy rows in a CSV in the tradebook folder, using the same columns as the tradebook:
+
+```csv
+Symbol,ISIN,Trade Date,Exchange,Trade Type,Quantity,Price,Trade ID
+RAYMONDREL,INE1SY401010,2025-05-14,NSE,buy,19,0,MANUAL-1
+```
+
+Use the allotment / cost-of-acquisition price (for demergers, the cost split announced by the company)
+and give each row a unique `Trade ID`. Splits and bonuses need no manual rows: they are applied
+automatically from Yahoo's split data.
+
 ## How it works
 
 1. **Tradebooks** (`postanalysis/tradebook.py`): finds the header row in each Console export and normalises the columns.
-2. **Lots** (`postanalysis/lots.py`): matches sells to the oldest buys first (FIFO), per ISIN, across NSE and BSE.
+2. **Lots** (`postanalysis/lots.py`): restates trades for later splits/bonuses, then matches sells to the
+   oldest buys first (FIFO), per ISIN, across NSE and BSE.
 3. **Prices** (`postanalysis/prices.py`): daily closes from Yahoo Finance (`SYMBOL.NS`, or `.BO` for BSE-only
    stocks), cached in `data/prices/`. For anything Yahoo lacks, drop a CSV named `<SYMBOL>.NS.csv` with
    columns `Date, Close, High, Stock Splits` into that folder.
 4. **Analysis** (`postanalysis/analysis.py`): for each lot, the highest close between the day after
-   purchase and the sell date (or today for held lots). Lot prices are rescaled for splits and bonuses.
+   purchase and the sell date (or today for held lots).
 
 ## Limitations
 

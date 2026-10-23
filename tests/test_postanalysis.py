@@ -1,7 +1,7 @@
 import pandas as pd
 
 from postanalysis.analysis import analyse_lots
-from postanalysis.lots import match_fifo
+from postanalysis.lots import adjust_for_splits, match_fifo
 from postanalysis.tradebook import normalise
 
 
@@ -47,11 +47,20 @@ def test_best_sell_date_within_holding_window():
     assert out["Missed Profit"] == 70
 
 
-def test_split_after_purchase_is_not_a_crash():
-    t = trades([["ABC", "2026-06-01", "buy", 1, 200, 1]])
-    lots, _ = match_fifo(t)
-    # 1:2 split on day 3; Yahoo closes are already split-adjusted.
-    out = analyse_lots(lots, {"INE000X01011": history([100, 101, 102, 104], [0, 0, 2.0, 0])}, "2026-06-04").iloc[0]
-    assert out["Status"] == "Held"
-    assert out["Best P&L"] == 8   # 2 shares x (104 - 100)
-    assert out["Note"] == "split/bonus adjusted"
+def test_bonus_shares_match_their_original_buy():
+    # 1 share bought, 1:1 bonus on day 3, then 2 shares sold: no unmatched sell.
+    t = trades([["ABC", "2026-06-01", "buy", 1, 200, 1], ["ABC", "2026-06-04", "sell", 2, 104, 2]])
+    hist = history([100, 101, 102, 104, 106], [0, 0, 2.0, 0, 0])
+    lots, unmatched = match_fifo(adjust_for_splits(t, {"INE000X01011": hist}))
+    assert unmatched.empty
+    out = analyse_lots(lots, {"INE000X01011": hist}).iloc[0]
+    assert out["Quantity"] == 2 and out["Buy Price"] == 100
+    assert out["Actual P&L"] == 8   # 2 x (104 - 100), not a 50% loss
+    assert out["Best Sell Date"] == pd.Timestamp("2026-06-04")
+
+
+def test_blank_isin_is_filled_from_same_symbol():
+    df = pd.DataFrame([["ABC", "INE1", "2026-06-01", "buy", 1, 10, 1], ["ABC", "", "2026-06-02", "buy", 1, 10, 2]],
+                      columns=["Symbol", "ISIN", "Trade Date", "Trade Type", "Quantity", "Price", "Trade ID"])
+    df["Exchange"] = "NSE"
+    assert normalise(df.astype(str))["ISIN"].tolist() == ["INE1", "INE1"]

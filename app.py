@@ -11,7 +11,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from postanalysis.analysis import analyse_lots, summarise_by_stock
-from postanalysis.lots import match_fifo
+from postanalysis.lots import adjust_for_splits, match_fifo
 from postanalysis.prices import get_history, ticker_for
 from postanalysis.tradebook import load_folder, normalise, read_tradebook
 
@@ -64,12 +64,12 @@ if trades.empty:
     st.info("Put your Zerodha Console tradebook exports in the folder above (or upload them).")
     st.stop()
 
-lots, unmatched = match_fifo(trades)
 tickers = tuple(
     (isin, ticker_for(g["Symbol"].iloc[-1], set(g["Exchange"])))
     for isin, g in trades.groupby("ISIN")
 )
 histories = load_prices(tickers, trades["Trade Date"].min(), pd.Timestamp(as_of))
+lots, unmatched = match_fifo(adjust_for_splits(trades, histories))
 analysed = analyse_lots(lots, histories, as_of)
 
 c1, c2, c3, c4, c5 = st.columns(5)
@@ -82,7 +82,8 @@ if "Best P&L" in analysed:
               f"₹{analysed['Missed Profit'].sum():,.0f} missed", delta_color="off")
 st.caption(
     f"Trades from {trades['Trade Date'].min():%d %b %Y} to {trades['Trade Date'].max():%d %b %Y}. "
-    "P&L is before brokerage, STT, stamp duty, DP charges and tax. Best dates use daily closes, in hindsight."
+    "P&L is before brokerage, STT, stamp duty, DP charges and tax. Best dates use daily closes, in hindsight. "
+    "Quantities and prices are restated for later splits/bonuses."
 )
 
 money = {c: st.column_config.NumberColumn(format="₹%.0f") for c in
@@ -94,7 +95,9 @@ dates = {c: st.column_config.DateColumn(format="DD MMM YYYY") for c in
 
 if not unmatched.empty:
     with st.expander(f"⚠️ {unmatched['Symbol'].nunique()} stocks sold with no matching buy — add older tradebooks"):
-        st.write("These sells have no earlier buy in the loaded files, so they are left out of the analysis.")
+        st.write("These sells have no earlier buy in the loaded files, so they are left out of the analysis. "
+                 "Usually shares from an IPO, demerger, transfer-in or a buy before your oldest tradebook: "
+                 "add them as buy rows in a CSV in the tradebook folder (see README).")
         st.dataframe(unmatched, hide_index=True, use_container_width=True, column_config=dates)
 
 no_price = analysed.loc[analysed.get("Note", pd.Series(dtype=str)).eq("no price data"), "Symbol"].unique()
@@ -139,4 +142,4 @@ with tab_chart:
                             marker=dict(color="#ff7f0e", size=12, symbol="star"))
         fig.update_layout(height=480, margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h"))
         st.plotly_chart(fig, use_container_width=True)
-        st.caption("Buy/sell markers show traded prices; if the stock split, chart prices are split-adjusted.")
+        st.caption("Chart and marker prices are adjusted for splits/bonuses.")

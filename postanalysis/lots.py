@@ -4,7 +4,26 @@ from collections import deque
 
 import pandas as pd
 
+from .prices import split_factor_after
+
 LOT_COLUMNS = ["Symbol", "ISIN", "Exchange", "Quantity", "Buy Date", "Buy Price", "Sell Date", "Sell Price"]
+
+
+def adjust_for_splits(trades: pd.DataFrame, histories: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Restate each trade in today's share count, so bonus/split shares match their buys.
+
+    E.g. 1 share bought at 3,000 before a 1:1 bonus becomes 2 shares at 1,500.
+    `histories` maps ISIN -> price history with a `Stock Splits` column.
+    """
+    trades = trades.copy()
+    factors = [
+        split_factor_after(histories[isin], date) if isin in histories and not histories[isin].empty else 1.0
+        for isin, date in zip(trades["ISIN"], trades["Trade Date"])
+    ]
+    trades["Split Factor"] = factors
+    trades["Quantity"] = trades["Quantity"] * trades["Split Factor"]
+    trades["Price"] = trades["Price"] / trades["Split Factor"]
+    return trades
 
 
 def match_fifo(trades: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:

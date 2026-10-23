@@ -2,16 +2,14 @@
 
 import pandas as pd
 
-from .prices import split_factor_after
-
 LTCG_DAYS = 365
 
 
 def analyse_lots(lots: pd.DataFrame, histories: dict[str, pd.DataFrame], as_of=None) -> pd.DataFrame:
     """Add best-sell-date and profit columns to `lots`.
 
-    `histories` maps ISIN -> daily prices (split-adjusted to today's share count).
-    Lot prices are rescaled into the same basis so splits/bonuses don't look like crashes.
+    `histories` maps ISIN -> daily prices (split-adjusted to today's share count); lots
+    should come from trades passed through `adjust_for_splits` so both use the same basis.
     The search window runs from the day after purchase to the actual sell date, or to the
     last available price for lots still held.
     """
@@ -26,12 +24,10 @@ def analyse_lots(lots: pd.DataFrame, histories: dict[str, pd.DataFrame], as_of=N
             rows.append(out)
             continue
 
-        buy_factor = split_factor_after(hist, lot["Buy Date"])
-        buy_price = lot["Buy Price"] / buy_factor
-        qty = lot["Quantity"] * buy_factor
+        buy_price, qty = lot["Buy Price"], lot["Quantity"]
         if out["Status"] == "Sold":
             end = lot["Sell Date"]
-            exit_date, exit_price = end, lot["Sell Price"] / split_factor_after(hist, end)
+            exit_date, exit_price = end, lot["Sell Price"]
         else:
             end = min(as_of, hist.index.max())
             exit_date, exit_price = hist.index.max(), hist["Close"].iloc[-1]
@@ -60,7 +56,7 @@ def analyse_lots(lots: pd.DataFrame, histories: dict[str, pd.DataFrame], as_of=N
             "Best Return %": (best_price / buy_price - 1) * 100,
             "Days Held": (exit_date - lot["Buy Date"]).days,
             "Term": "LTCG" if (exit_date - lot["Buy Date"]).days > LTCG_DAYS else "STCG",
-            "Note": "split/bonus adjusted" if buy_factor != 1 else "",
+            "Note": "",
         })
         rows.append(out)
     return pd.DataFrame(rows)

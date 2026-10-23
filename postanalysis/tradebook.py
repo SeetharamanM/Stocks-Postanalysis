@@ -37,7 +37,7 @@ def normalise(df: pd.DataFrame) -> pd.DataFrame:
     """Type the columns, drop duplicate trades across overlapping exports, sort chronologically."""
     df = df.copy()
     df["Symbol"] = df["Symbol"].str.strip()
-    df["ISIN"] = df["ISIN"].str.strip()
+    df["ISIN"] = df["ISIN"].str.strip().replace("", None)
     df["Exchange"] = df["Exchange"].str.strip().str.upper()
     df["Trade Type"] = df["Trade Type"].str.strip().str.lower()
     df["Trade Date"] = pd.to_datetime(df["Trade Date"]).dt.normalize()
@@ -47,6 +47,9 @@ def normalise(df: pd.DataFrame) -> pd.DataFrame:
         df["Order Execution Time"] = pd.to_datetime(df["Order Execution Time"], errors="coerce")
     else:
         df["Order Execution Time"] = df["Trade Date"]
+    # Some Console exports leave ISIN blank on a few rows; borrow it from the same symbol's other rows.
+    known = df.dropna(subset=["ISIN"]).groupby("Symbol")["ISIN"].last()
+    df["ISIN"] = df["ISIN"].fillna(df["Symbol"].map(known)).fillna("SYMBOL:" + df["Symbol"])
     # Trade IDs are unique per exchange + segment, so this removes rows repeated across files.
     keys = [c for c in ["Exchange", "Segment", "Trade ID", "Symbol", "Trade Type"] if c in df.columns]
     df = df.drop_duplicates(subset=keys)
