@@ -81,9 +81,13 @@ for i, peak in enumerate(peak_rows.to_dict("records")):
     fund = fundamentals(ticker, refresh_token)
     if fund.get("error"):
         failed.append(peak["Symbol"])
-    info = fund.get("info", {})
-    params = parameters_at(fund, histories[peak["ISIN"]], index_close, peak["Peak Date"], peak["Peak Price"],
-                           lookback_days, risk_free)
+    info = fund.get("info") or {}
+    try:
+        params = parameters_at(fund, histories[peak["ISIN"]], index_close, peak["Peak Date"], peak["Peak Price"],
+                               lookback_days, risk_free)
+    except Exception as exc:  # one stock's odd data shouldn't break the whole page
+        params = {"EPS Basis": f"error: {exc}"}
+        failed.append(peak["Symbol"])
     rows.append({
         **peak, **params,
         "PE Now": info.get("trailingPE"),
@@ -95,9 +99,12 @@ for i, peak in enumerate(peak_rows.to_dict("records")):
     progress.progress((i + 1) / len(peak_rows), f"Loading fundamentals… {peak['Symbol']}")
 progress.empty()
 if failed:
-    st.warning(f"Could not download fundamentals for: {', '.join(failed)}.")
+    st.warning(f"Could not get fundamentals for: {', '.join(sorted(set(failed)))}. Their PE/PEG cells are blank.")
 
 result = pd.DataFrame(rows)
+for col in ["Traded Price", "EPS (TTM)", "PE", "EPS Growth %", "PEG", "Beta", "Alpha %", "Stock Return %",
+            "Index Return %"]:
+    result[col] = pd.to_numeric(result.get(col), errors="coerce")
 for col in ["PE Now", "PEG Now"]:
     result[col] = pd.to_numeric(result[col], errors="coerce")
 
@@ -118,8 +125,11 @@ st.download_button("Download CSV", result[cols].to_csv(index=False), "stock_para
 
 chart = result.dropna(subset=["PE", "Alpha %"])
 if not chart.empty:
-    fig = px.scatter(chart, x="PE", y="Alpha %", text="Symbol", color="Sector", size=chart["Best P&L"].clip(lower=1),
-                     hover_data={"Peak Date": "|%d %b %Y", "PEG": ":.2f", "Beta": ":.2f", "Sector": False},
+    # Label only the most profitable stocks so a full-portfolio chart stays readable.
+    chart = chart.assign(Label=chart["Symbol"].where(chart["Best P&L"].rank(ascending=False) <= 30, ""))
+    fig = px.scatter(chart, x="PE", y="Alpha %", text="Label", color="Sector", size=chart["Best P&L"].clip(lower=1),
+                     hover_name="Symbol", hover_data={"Peak Date": "|%d %b %Y", "PEG": ":.2f", "Beta": ":.2f",
+                                                       "Sector": False, "Label": False},
                      title="PE vs alpha at each stock's peak (bubble size = profit at peak)")
     fig.update_traces(textposition="top center")
     fig.update_layout(height=520, margin=dict(l=10, r=10, t=50, b=10))

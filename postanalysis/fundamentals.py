@@ -27,7 +27,7 @@ def _eps_series(statement: pd.DataFrame) -> dict[str, float]:
     for row in EPS_ROWS:
         if row in statement.index:
             series = pd.to_numeric(statement.loc[row], errors="coerce").dropna()
-            return {pd.Timestamp(d).strftime("%Y-%m-%d"): float(v) for d, v in series.items()}
+            return {pd.Timestamp(d).strftime("%Y-%m-%d"): float(v) for d, v in series.items() if pd.notna(d)}
     return {}
 
 
@@ -60,8 +60,11 @@ def get_fundamentals(ticker: str, cache_dir, refresh: bool = False) -> dict:
     return data
 
 
-def _periods(eps: dict[str, float]) -> pd.Series:
-    return pd.Series({pd.Timestamp(k): v for k, v in eps.items()}, dtype=float).sort_index()
+def _periods(eps: dict[str, float] | None) -> pd.Series:
+    """EPS by period end, always date-indexed (an empty dict would otherwise get a number index)."""
+    eps = eps or {}
+    index = pd.DatetimeIndex([pd.Timestamp(k) for k in eps], name="Period")
+    return pd.Series(list(eps.values()), index=index, dtype=float).dropna().sort_index()
 
 
 def eps_ttm_at(fund: dict, date) -> tuple[float, str]:

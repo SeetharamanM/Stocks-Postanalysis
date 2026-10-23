@@ -65,3 +65,15 @@ def test_pe_and_peg_at_peak():
     assert p["PE"] == 20.0                      # 240 / TTM EPS 12
     assert p["EPS Growth %"] == 25.0            # FY25 10 vs FY24 8 (only 4 quarters reported)
     assert p["PEG"] == 0.8
+
+
+def test_stock_with_no_reported_eps_gives_blank_pe_not_an_error():
+    empty = {"annual_eps": {}, "quarterly_eps": {}}
+    eps, basis = eps_ttm_at(empty, "2026-01-01")
+    assert np.isnan(eps) and basis == "no EPS before this date"
+    assert np.isnan(eps_growth_at(empty, "2026-01-01"))
+    assert np.isnan(eps_ttm_at({"annual_eps": None, "quarterly_eps": {"2025-12-31": 2.0}}, "2026-01-01")[0])
+    idx = pd.bdate_range("2025-06-01", "2026-02-27")
+    hist = pd.DataFrame({"Close": np.linspace(100, 240, len(idx)), "Stock Splits": 0.0}, index=idx)
+    p = parameters_at(empty, hist, hist["Close"], "2026-02-27", 240.0)
+    assert np.isnan(p["PE"]) and np.isnan(p["PEG"]) and abs(p["Beta"] - 1) < 1e-9
