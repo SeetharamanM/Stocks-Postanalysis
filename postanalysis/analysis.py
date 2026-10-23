@@ -66,6 +66,7 @@ def analyse_lots(lots: pd.DataFrame, histories: dict[str, pd.DataFrame], as_of=N
 def sold_lots(analysed: pd.DataFrame) -> pd.DataFrame:
     """Closed lots, plus how the price moved after the sale."""
     sold = analysed[analysed["Status"] == "Sold"].copy()
+    sold["Invested"] = _invested(sold)
     if "Price Now" in sold:
         sold["Since Sale %"] = (sold["Price Now"] / sold["Sell Price"] - 1) * 100
     return sold
@@ -75,6 +76,7 @@ def held_lots(analysed: pd.DataFrame, as_of=None) -> pd.DataFrame:
     """Open lots, plus distance from their peak and when they turn long-term."""
     as_of = pd.Timestamp(as_of or pd.Timestamp.today()).normalize()
     held = analysed[analysed["Status"] == "Held"].copy()
+    held["Invested"] = _invested(held)
     if "Best Sell Price" in held:
         held["From Peak %"] = (held["Exit Price"] / held["Best Sell Price"] - 1) * 100
     held["LTCG From"] = held["Buy Date"] + pd.Timedelta(days=LTCG_DAYS + 1)
@@ -91,7 +93,7 @@ def summarise_sold(sold: pd.DataFrame) -> pd.DataFrame:
     sold = sold.dropna(subset=["Best P&L"])
     if sold.empty:
         return pd.DataFrame()
-    sold = sold.assign(Invested=_invested(sold), Proceeds=sold["Sell Price"] * sold["Quantity"])
+    sold = sold.assign(Proceeds=sold["Sell Price"] * sold["Quantity"])
     out = sold.groupby("Symbol").agg(
         Lots=("Quantity", "size"),
         Quantity=("Quantity", "sum"),
@@ -114,7 +116,7 @@ def summarise_held(held: pd.DataFrame) -> pd.DataFrame:
     held = held.dropna(subset=["Best P&L"])
     if held.empty:
         return pd.DataFrame()
-    held = held.assign(Invested=_invested(held), LTCG_Qty=held["Quantity"].where(held["Term"] == "LTCG", 0))
+    held = held.assign(LTCG_Qty=held["Quantity"].where(held["Term"] == "LTCG", 0))
     peak = held.loc[held.groupby("Symbol")["Best Sell Price"].idxmax(), ["Symbol", "Best Sell Date", "Best Sell Price"]]
     pending = held[held["Days To LTCG"] > 0].groupby("Symbol")["LTCG From"].min()
     out = held.groupby("Symbol").agg(
@@ -136,3 +138,30 @@ def summarise_held(held: pd.DataFrame) -> pd.DataFrame:
     cols = ["Lots", "Quantity", "Avg Buy Price", "Invested", "Price Now", "Unrealised P&L", "Return %",
             "Peak Date", "Peak Price", "From Peak %", "Best P&L", "Missed Profit", "First Buy", "LTCG Qty", "Next LTCG Date"]
     return out[cols].sort_values("Unrealised P&L").reset_index()
+
+
+def pnl_totals(summary: pd.DataFrame, pnl_col: str) -> dict:
+    """Invested, gross profit (winning stocks), gross loss (losing stocks) and net P&L of a per-stock summary."""
+    if summary.empty:
+        return {"Invested": 0.0, "Profit": 0.0, "Loss": 0.0, "Net": 0.0, "Winners": 0, "Losers": 0, "Return %": 0.0}
+    pnl = summary[pnl_col]
+    invested = summary["Invested"].sum()
+    return {
+        "Invested": invested,
+        "Profit": pnl[pnl > 0].sum(),
+        "Loss": pnl[pnl < 0].sum(),
+        "Net": pnl.sum(),
+        "Winners": int((pnl > 0).sum()),
+        "Losers": int((pnl < 0).sum()),
+        "Return %": pnl.sum() / invested * 100 if invested else 0.0,
+    }
+
+
+def totals_row(summary: pd.DataFrame, sum_cols: list[str], unit: str = "stocks") -> pd.DataFrame:
+    """A single 'Total' row summing `sum_cols`, with Return % recomputed on the totals."""
+    row = {c: summary[c].sum() for c in sum_cols if c in summary}
+    row["Symbol"] = f"Total ({len(summary)} {unit})"
+    pnl = next((c for c in ["Realised P&L", "Unrealised P&L", "Actual P&L"] if c in row), None)
+    if pnl and row.get("Invested"):
+        row["Return %"] = row[pnl] / row["Invested"] * 100
+    return pd.DataFrame([row])

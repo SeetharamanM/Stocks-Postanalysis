@@ -10,7 +10,9 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from postanalysis.analysis import analyse_lots, held_lots, sold_lots, summarise_held, summarise_sold
+from postanalysis.analysis import (
+    analyse_lots, held_lots, pnl_totals, sold_lots, summarise_held, summarise_sold, totals_row,
+)
 from postanalysis.lots import adjust_for_splits, match_fifo
 from postanalysis.prices import get_history, ticker_for
 from postanalysis.tradebook import load_folder, normalise, read_tradebook
@@ -74,6 +76,28 @@ analysed = analyse_lots(lots, histories, as_of)
 
 sold = sold_lots(analysed)
 held = held_lots(analysed, as_of)
+sold_summary = summarise_sold(sold)
+held_summary = summarise_held(held)
+sold_tot = pnl_totals(sold_summary, "Realised P&L")
+held_tot = pnl_totals(held_summary, "Unrealised P&L")
+
+def rupees(x: float) -> str:
+    return f"-₹{abs(x):,.0f}" if x < 0 else f"₹{x:,.0f}"
+
+
+def pct(x: float) -> str:
+    return f"{x:+.1f}%"
+
+
+def pnl_metrics(tot: dict, label: str):
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Invested", rupees(tot["Invested"]))
+    m2.metric(f"Profit ({tot['Winners']} stocks)", rupees(tot["Profit"]),
+              help="Sum of P&L of the stocks that made money")
+    m3.metric(f"Loss ({tot['Losers']} stocks)", rupees(tot["Loss"]),
+              help="Sum of P&L of the stocks that lost money")
+    m4.metric(f"Net {label} P&L", rupees(tot["Net"]), pct(tot["Return %"]))
+
 
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Trades", f"{len(trades):,}")
@@ -81,6 +105,14 @@ c2.metric("Files", trades["source_file"].nunique())
 c3.metric("Stocks traded", trades["ISIN"].nunique())
 c4.metric("Stocks sold", sold["ISIN"].nunique())
 c5.metric("Stocks held", held["ISIN"].nunique())
+o1, o2, o3, o4 = st.columns(4)
+o1.metric("Total invested", rupees(sold_tot["Invested"] + held_tot["Invested"]),
+          help="Cost of sold lots + cost of lots still held")
+o2.metric("Realised P&L", rupees(sold_tot["Net"]), pct(sold_tot["Return %"]))
+o3.metric("Unrealised P&L", rupees(held_tot["Net"]), pct(held_tot["Return %"]))
+overall = sold_tot["Net"] + held_tot["Net"]
+overall_inv = sold_tot["Invested"] + held_tot["Invested"]
+o4.metric("Total P&L", rupees(overall), pct(overall / overall_inv * 100 if overall_inv else 0))
 st.caption(
     f"Trades from {trades['Trade Date'].min():%d %b %Y} to {trades['Trade Date'].max():%d %b %Y}. "
     "P&L is before brokerage, STT, stamp duty, DP charges and tax. Best dates use daily closes, in hindsight. "
@@ -99,11 +131,17 @@ dates = {c: st.column_config.DateColumn(format="DD MMM YYYY") for c in
 fmt = {**money, **price, **dates, **qty}
 
 
-def table(df: pd.DataFrame, cols: list[str], sort: str, ascending: bool, filename: str):
+def table(df: pd.DataFrame, cols: list[str], sort: str, ascending: bool, filename: str,
+          sums: list[str] = (), unit: str = "stocks"):
     view = df[[c for c in cols if c in df.columns]]
     if sort in view:
         view = view.sort_values(sort, ascending=ascending)
     st.dataframe(view, hide_index=True, use_container_width=True, column_config=fmt)
+    if sums and not view.empty:
+        total_row = totals_row(view, list(sums), unit)
+        total_row = total_row[[c for c in view.columns if c in total_row]]
+        st.dataframe(total_row, hide_index=True, use_container_width=True, column_config=fmt)
+        view = pd.concat([view, total_row], ignore_index=True)
     st.download_button("Download CSV", view.to_csv(index=False), filename, "text/csv", key=filename)
 
 
@@ -127,51 +165,53 @@ tab_sold, tab_held, tab_chart = st.tabs(["Sold stocks", "Held stocks", "Chart"])
 
 with tab_sold:
     st.subheader("Sold: did I sell at the right time?")
+    pnl_metrics(sold_tot, "realised")
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Realised P&L", f"₹{total(sold, 'Actual P&L'):,.0f}")
-    m2.metric("Best possible P&L", f"₹{total(sold, 'Best P&L'):,.0f}")
-    m3.metric("Missed profit", f"₹{total(sold, 'Missed Profit'):,.0f}")
+    m1.metric("Best possible P&L", rupees(total(sold, "Best P&L")))
+    m2.metric("Missed profit", rupees(total(sold, "Missed Profit")))
     if "Since Sale %" in sold and sold["Since Sale %"].notna().any():
-        m4.metric("Sold, then rose further", f"{(sold['Since Sale %'] > 0).mean():.0%} of lots")
+        m3.metric("Sold, then rose further", f"{(sold['Since Sale %'] > 0).mean():.0%} of lots")
     st.caption("Best date = highest close between buying and selling. "
                "Since Sale % = today's price vs your sell price (positive means it kept rising after you sold).")
     by_stock, by_lot = st.tabs(["By stock", "By lot"])
     with by_stock:
-        table(summarise_sold(sold),
+        table(sold_summary,
               ["Symbol", "Lots", "Quantity", "Invested", "Realised P&L", "Return %", "Best P&L", "Missed Profit",
                "Last Sell Date", "Price Now", "Since Sale %"],
-              "Missed Profit", False, "sold_by_stock.csv")
+              "Missed Profit", False, "sold_by_stock.csv",
+              sums=["Lots", "Invested", "Realised P&L", "Best P&L", "Missed Profit"])
     with by_lot:
         table(sold,
-              ["Symbol", "Quantity", "Buy Date", "Buy Price", "Sell Date", "Sell Price", "Best Sell Date",
+              ["Symbol", "Quantity", "Buy Date", "Buy Price", "Invested", "Sell Date", "Sell Price", "Best Sell Date",
                "Best Sell Price", "Actual P&L", "Best P&L", "Missed Profit", "Actual Return %", "Best Return %",
                "Days Held", "Term", "Price Now", "Since Sale %", "Note"],
-              "Missed Profit", False, "sold_lots.csv")
+              "Missed Profit", False, "sold_lots.csv",
+              sums=["Invested", "Actual P&L", "Best P&L", "Missed Profit"], unit="lots")
 
 with tab_held:
     st.subheader("Held: how are my current holdings doing?")
+    pnl_metrics(held_tot, "unrealised")
     m1, m2, m3, m4 = st.columns(4)
-    invested = (held["Buy Price"] * held["Quantity"]).sum()
-    unrealised = total(held, "Actual P&L")
-    m1.metric("Invested", f"₹{invested:,.0f}")
-    m2.metric("Unrealised P&L", f"₹{unrealised:,.0f}", f"{unrealised / invested:.1%}" if invested else None)
-    m3.metric("P&L at each lot's peak", f"₹{total(held, 'Best P&L'):,.0f}")
-    m4.metric("Lots turning LTCG in 30 days", int(((held["Days To LTCG"] > 0) & (held["Days To LTCG"] <= 30)).sum()))
+    m1.metric("Current value", rupees(held_tot["Invested"] + held_tot["Net"]))
+    m2.metric("P&L at each lot's peak", rupees(total(held, "Best P&L")))
+    m3.metric("Lots turning LTCG in 30 days", int(((held["Days To LTCG"] > 0) & (held["Days To LTCG"] <= 30)).sum()))
     st.caption("Peak = highest close since you bought. From Peak % = today's price vs that peak. "
                "Lots held over 12 months are taxed as LTCG (12.5%) instead of STCG (20%).")
     by_stock, by_lot = st.tabs(["By stock", "By lot"])
     with by_stock:
-        table(summarise_held(held),
+        table(held_summary,
               ["Symbol", "Lots", "Quantity", "Avg Buy Price", "Invested", "Price Now", "Unrealised P&L", "Return %",
                "Peak Date", "Peak Price", "From Peak %", "Best P&L", "Missed Profit", "First Buy", "LTCG Qty",
                "Next LTCG Date"],
-              "Unrealised P&L", True, "held_by_stock.csv")
+              "Unrealised P&L", True, "held_by_stock.csv",
+              sums=["Lots", "Invested", "Unrealised P&L", "Best P&L", "Missed Profit"])
     with by_lot:
         table(held,
-              ["Symbol", "Quantity", "Buy Date", "Buy Price", "Price Now", "Actual P&L", "Actual Return %",
+              ["Symbol", "Quantity", "Buy Date", "Buy Price", "Invested", "Price Now", "Actual P&L", "Actual Return %",
                "Best Sell Date", "Best Sell Price", "Best P&L", "From Peak %", "Days Held", "Term", "LTCG From",
                "Days To LTCG", "Note"],
-              "Actual P&L", True, "held_lots.csv")
+              "Actual P&L", True, "held_lots.csv",
+              sums=["Invested", "Actual P&L", "Best P&L"], unit="lots")
 
 with tab_chart:
     symbols = sorted(analysed["Symbol"].unique())

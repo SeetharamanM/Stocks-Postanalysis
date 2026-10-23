@@ -1,6 +1,8 @@
 import pandas as pd
 
-from postanalysis.analysis import analyse_lots, held_lots, sold_lots, summarise_held, summarise_sold
+from postanalysis.analysis import (
+    analyse_lots, held_lots, pnl_totals, sold_lots, summarise_held, summarise_sold, totals_row,
+)
 from postanalysis.lots import adjust_for_splits, match_fifo
 from postanalysis.tradebook import normalise
 
@@ -88,3 +90,14 @@ def test_sold_and_held_are_analysed_separately():
     assert h["Unrealised P&L"] == 5 * (120 - 101)
     assert h["Peak Date"] == pd.Timestamp("2026-06-06") and h["From Peak %"] == 0
     assert h["Next LTCG Date"] == pd.Timestamp("2027-06-03")
+
+
+def test_profit_loss_and_invested_totals():
+    summary = pd.DataFrame({"Symbol": ["A", "B", "C"], "Lots": [1, 2, 1],
+                            "Invested": [1000.0, 2000.0, 500.0], "Realised P&L": [300.0, -150.0, 50.0]})
+    t = pnl_totals(summary, "Realised P&L")
+    assert (t["Invested"], t["Profit"], t["Loss"], t["Net"]) == (3500, 350, -150, 200)
+    assert (t["Winners"], t["Losers"]) == (2, 1)
+    row = totals_row(summary, ["Lots", "Invested", "Realised P&L"]).iloc[0]
+    assert row["Symbol"] == "Total (3 stocks)" and row["Lots"] == 4
+    assert row["Return %"] == 200 / 3500 * 100
