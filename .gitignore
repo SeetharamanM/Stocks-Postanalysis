@@ -1,0 +1,13 @@
+# Personal trade data — upload it in the app instead of committing it
+tradebook*.xlsx
+tradebook*.csv
+*.xlsx
+*.xls
+*.csv
+
+# Streamlit secrets (APP_PASSWORD etc.)
+.streamlit/secrets.toml
+
+__pycache__/
+*.pyc
+.venv/
